@@ -1,0 +1,30 @@
+services:
+  #bitflyer-collector:  # WebSocketから約定を拾ってOHLCを作るスクリプト
+  #  build: ./collector
+  #  restart: always
+  
+  db:            # TimescaleDB (足データの保存)
+    image: timescale/timescaledb:latest-pg18
+    environment:
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - default
+      - reverse-proxy
+
+  grafana:             # 収集した足データをチャートとして可視化
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    networks:
+      - default
+      - reverse-proxy
+
+volumes:
+  db_data:
+
+networks:
+  reverse-proxy:
+    name: reverse-proxy
+    external: true
