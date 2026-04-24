@@ -1,14 +1,39 @@
 services:
-  #bitflyer-collector:  # WebSocketから約定を拾ってOHLCを作るスクリプト
-  #  build: ./collector
-  #  restart: always
-  
+  collector:
+    restart: unless-stopped
+
+    build:
+      context: ./bitflyer-collector
+      dockerfile: Dockerfile
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    environment:
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - PYTHONPATH=.
+    networks:
+      - default
+      - reverse-proxy
+
   db:            # TimescaleDB (足データの保存)
     image: timescale/timescaledb:latest-pg18
-    environment:
-      - POSTGRES_PASSWORD=password
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data:/var/lib/postgresql
+    environment:
+      - POSTGRES_PASSWORD=postgres
+    healthcheck:
+      # timescale イメージでも pg_isready は標準搭載されています
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s # TimescaleDB は拡張の初期化があるため、少し長めに取ると安心です
     networks:
       - default
       - reverse-proxy

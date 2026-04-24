@@ -1,3 +1,4 @@
+import os
 import time
 import asyncio
 from datetime import datetime, timezone
@@ -5,14 +6,15 @@ from datetime import datetime, timezone
 import httpx
 import psycopg
 
-# 設定
-DB_CONFIG = {
-    "dbname": "trading_db",
-    "user": "bot_user",
-    "password": "gP2kh7zl4Wy8",
-    "host": "db", # Docker Compose内ならサービス名
-    "port": "5432"
-}
+def db_config() -> dict:
+    return {
+        "dbname": os.environ.get("DB_NAME"),
+        "user": os.environ.get("DB_USER"),
+        "password": os.environ.get("DB_PASSWORD"),
+        "host": os.environ.get("DB_HOST"), # Docker Compose内ならサービス名
+        "port": os.environ.get("DB_PORT"),
+    }
+
 SYMBOL = "FX_BTC_JPY"
 INTERVAL = "1m"
 
@@ -31,12 +33,39 @@ async def stream_listener():
         await asyncio.sleep(100)
 
 async def periodic_fetcher():
+    last_cnt = 0
+    last_newest_blank_time = 0
     while True:
         # 10分おきの取得
         data = await async_fetch()
+        cnt = len(data) if data else 0
         if data:
             await db_queue.put(data)
-        await asyncio.sleep(600)
+
+        await asyncio.sleep(60)
+
+        if cnt > 0 and last_cnt > cnt:
+            # 前回の同期件数より今回の同期件数が少ない場合は、何らかの問題でデータが欠損している可能性がある
+            # 多くの場合は、日付変更線を超えたことによるリセット
+            print(f"同期件数が前回の {last_cnt} 件から {cnt} 件に減少しました。データ欠損の可能性があります。")
+
+            newest_blank_time = await asyncio.to_thread(search_newest_blank_time)
+            if newest_blank_time:
+                print(f"最新の空白時間: {newest_blank_time}")
+                to_fetch = True
+                if last_newest_blank_time and newest_blank_time == last_newest_blank_time:
+                    print("空白時間に変化なし。スキップします。")
+                    to_fetch = False
+
+                if to_fetch:
+                    data = await async_fetch(before=newest_blank_time - 60*1000) # 空白時間の終了時刻の1分前を指定してAPIを呼び出す
+                    if data:
+                        await db_queue.put(data)
+                    last_newest_blank_time = newest_blank_time
+
+        last_cnt = cnt
+
+        await asyncio.sleep(540)
 
 async def blank_fetcher():
     last_newest_blank_time = 0
@@ -70,14 +99,14 @@ def search_newest_blank_time() -> int:
         FROM ohlcv_data
         WHERE symbol = %s AND interval = %s
     ) t
-    WHERE time - prev_time > INTERVAL '50 minute 30 seconds'
-    and time < '2026-04-22 12:00:00+00'
+    WHERE time - prev_time > INTERVAL '5 minute 30 seconds'
+    and time < '2026-04-24 12:00:00+00'
     ORDER BY time DESC
     LIMIT 1;
     """
 
     try:
-        with psycopg.connect(**DB_CONFIG) as conn:
+        with psycopg.connect(**db_config()) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, ("bitflyer:" + SYMBOL, INTERVAL))
                 row = cur.fetchone()
@@ -89,7 +118,7 @@ def search_newest_blank_time() -> int:
     return 0
 
 def save_to_db(data):
-    with psycopg.connect(**DB_CONFIG) as conn:
+    with psycopg.connect(**db_config()) as conn:
         try:
             # 有効なデータ（open/highが存在する行）のみ抽出
             valid_data = [row for row in data if row[1] and row[2]]
